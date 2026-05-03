@@ -1,204 +1,281 @@
 ---
 name: herbert-swarm
-description: Herbert Swarm — Multi-Agent Orchestration für MiniMax/Herbert. Spawn 15+ parallel Agents die gemeinsam ein full-stack Projekt bauen. Inspired by ruflo but for MiniMax.
-triggers: [herbert swarm, multi-agent, 30 agents, viele agenten, parallel build, swarm build]
-version: 1.0
-author: Herbert/MiniMax
+description: Herbert Swarm 2.0 — Intelligent Multi-Agent Orchestration mit Shared Brain, Planner und Coordinator. Nutze delegate_task für echte parallele Agents.
+triggers: [herbert swarm, swarm 2.0, intelligent swarm, shared brain, planner, coordinator, multi-agent mit gedächtnis]
+version: 2.0
 category: agent-orchestration
-tags: [multi-agent, parallel, swarm, orchestration, mini-max]
 ---
 
-# Herbert Swarm — Multi-Agent Orchestration
+# Herbert Swarm 2.0 — Intelligent Swarm Orchestration
 
 ## Overview
 
-Herbert Swarm ist ein Multi-Agent-Orchestrierungssystem für MiniMax/Herbert. Es spawnt parallele Agents die gemeinsam ein full-stack Projekt bauen — ähnlich wie ruflo, aber für MiniMax statt Claude Code.
+Herbert Swarm 2.0 ist ein intelligentes Multi-Agent-System mit **Shared Brain**, **Planner** und **Coordinator**.
 
-**Was es macht:**
-- 15+ Agents parallel arbeiten lassen
-- Phasen-basiert mit Dependency-Resolution
-- Jeder Agent hat klare Aufgabe + Files-to-create
-- Ergebnisse landen direkt im Projekt-Filesystem
-
-## Quick Start
-
-```bash
-# 1. Swarm Scripts installieren
-mkdir -p ~/Documents/HerbertSwarm
-# Scripts kommen aus ~/Documents/HerbertSwarm/
-
-# 2. Projekt initialisieren
-cd ~/Documents/HerbertSwarm
-python3 swarm_master.py init --project ~/Documents/EasyROM --agents 15
-
-# 3. Agents spawnen und ausführen
-python3 run_swarm.py --project ~/Documents/EasyROM --agents 15 --parallel 3
-```
+**Was es anders macht als v1:**
+- **Shared Brain**: Alle Agents teilen sich Wissen (Facts, Files, Findings)
+- **Intelligenter Planner**: Analysiert SPEC.md, erstellt Dependency-Graph
+- **Coordinator**: Orchestriert mit Dependency-Awareness, nicht blind parallel
+- **Jeder Agent liest + schreibt ins Brain**: Wissen bleibt erhalten
+- **Phase-Tracking**: Coordinator weiß welche Phase läuft
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Herbert Swarm Master (ICH / MiniMax)                    │
-│  - Task Definition (tasks.json)                          │
-│  - Phase Orchestration                                   │
-│  - Dependency Resolution                                 │
-└─────────────────────────────────────────────────────────┘
-        │
-        ├── Phase 1: INFRA (3 Agents parallel)
-        │   └── Agent-001: Configs, Package.json, vite.config
-        │   └── Agent-002: Backend Core (database, models)
-        │   └── Agent-003: Backend Scraper (scraper.py, hasher.py)
-        │
-        ├── Phase 2: BACKEND_API (3 Agents parallel)
-        │   └── Agent-004: API Endpoints (roms.py, platforms.py)
-        │   └── Agent-005: API (scrape.py, emulator.py, stats.py)
-        │   └── Agent-006: API Router + Settings
-        │
-        ├── Phase 3: FRONTEND (3 Agents parallel)
-        │   └── Agent-007: Entry Points (main.tsx, App.tsx, api.ts)
-        │   └── Agent-008: Pages (Dashboard, Library)
-        │   └── Agent-009: Pages (PlatformView, ROMDetail)
-        │
-        ├── Phase 4: FRONTEND_COMPONENTS (3 Agents parallel)
-        │   └── Agent-010: Components (ROMCard, FilterSidebar)
-        │   └── Agent-011: Components (UploadZone, SearchBar, Toast)
-        │   └── Agent-012: Hooks (useROMs, usePlatforms, etc.)
-        │
-        └── Phase 5: TESTING (3 Agents parallel)
-            └── Agent-013: Configs + Scripts
-            └── Agent-014: Tests (pytest)
-            └── Agent-015: Emulator Detection + Init Files
+┌──────────────────────────────────────────────────────────────┐
+│  COORDINATOR                                                  │
+│  - Welche Phase läuft?                                        │
+│  - Welche Tasks sind ready (Deps erfüllt)?                    │
+│  - Wer macht was wann?                                        │
+└──────────────────────────────────────────────────────────────┘
+                              ↑
+                              │
+┌──────────────────────────────────────────────────────────────┐
+│  SHARED BRAIN (brain.json auf Disk)                          │
+│  - Facts: {key: value, source_agent, timestamp, tags}       │
+│  - Files: {path: {agent, size, verified}}                     │
+│  - Tasks: {id: {status, deps, phase, assigned}}              │
+│  - Agents: {id: {role, status, capabilities}}                │
+└──────────────────────────────────────────────────────────────┘
+                              ↑
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        │                     │                     │
+   ┌────▼────┐          ┌────▼────┐          ┌────▼────┐
+   │ Agent 1 │          │ Agent 2 │          │ Agent 3 │
+   │ (PLANNER)│          │ (CODER) │          │(REVIEWER)│
+   │ Reads:    │   ←──   │Reads:   │   ←──   │Reads:    │
+   │  Brain    │   Wissen│  Brain  │   Wissen│  Brain   │
+   │ Writes:   │  ──→   │Writes:  │   ──→   │Writes:   │
+   │ Plans,    │         │ Code,   │         │ Reviews, │
+   │ Analysis │         │ Files   │         │ Facts   │
+   └──────────┘          └─────────┘          └─────────┘
 ```
 
-## Task Definition Format
+## Key Concepts
 
-Tasks werden in `tasks.json` definiert:
-
-```json
-{
-  "project": "MyProject",
-  "project_path": "/path/to/project",
-  "tasks": [
-    {
-      "id": "backend-api-1",
-      "role": "BACKEND_API",
-      "agent": "agent-005",
-      "description": "Create FastAPI endpoints for ROM CRUD",
-      "files": [
-        "backend/api/roms.py",
-        "backend/api/platforms.py"
-      ],
-      "priority": 1,
-      "status": "pending",
-      "dependencies": ["backend-core-1"]
-    }
-  ]
-}
-```
-
-## Agent Roles
-
-| Role | Count | Purpose |
-|------|-------|---------|
-| INFRA | 2 | Configs, package.json, build setup |
-| BACKEND_CORE | 2 | Database, models, scraper, hasher |
-| BACKEND_API | 3 | API endpoints |
-| FRONTEND | 3 | Pages, components, hooks |
-| TESTER | 1 | Unit tests, integration tests |
-
-## Dependency System
-
-Tasks mit Dependencies warten bis alle Dependencies `done` sind:
-```json
-"dependencies": ["backend-core-1", "infra-1"]
-```
-
-## CLI Commands
-
-```bash
-# Init Swarm + Tasks erstellen
-python3 swarm_master.py init --project <path> --agents <count>
-
-# Status aller Tasks anzeigen
-python3 swarm_master.py status
-
-# Swarm ausführen ( phases + parallel )
-python3 run_swarm.py --project <path> --agents 15 --parallel 3
-
-# Ergebnisse einsammeln
-python3 swarm_master.py collect --output <path>
-
-# Final Report
-python3 swarm_master.py report
-```
-
-## Integration mit MiniMax/Herbert
-
-### delegate_task nutzen (empfohlen)
-
+### Shared Brain
 ```python
-# Phase 1 parallel starten
-delegate_task(
-    tasks=[
-        {"goal": "Create configs...", "role": "leaf", "toolsets": ["terminal","file"]},
-        {"goal": "Create database...", "role": "leaf", "toolsets": ["terminal","file"]},
-        {"goal": "Create scraper...", "role": "leaf", "toolsets": ["terminal","file"]},
-    ]
+# Jeder Agent kann:
+brain.add_fact("api_endpoints", ["GET /roms", "POST /roms"], "agent-001")
+brain.get_fact("api_endpoints")  # → ["GET /roms", "POST /roms"]
+brain.query_facts(tag="design")   # Alle Facts mit Tag "design"
+```
+
+### Task Dependencies
+```python
+task = Task(
+    id="backend-api-1",
+    description="Create FastAPI endpoints",
+    files=["backend/api/roms.py"],
+    dependencies=["backend-core-1", "infra-1"],  # Wartet auf diese
+    phase=3
 )
 ```
 
-### Wichtig für Agent-Prompts
+### Phase-Based Execution
+```python
+# Coordinator weiß:
+# - Phase 1 (INFRA): keine Deps → parallel
+# - Phase 2 (CORE): depends on INFRA → sequentiell inner phase
+# - Phase 3 (API): depends on CORE → nach CORE
+# usw.
+```
 
-Jeder Agent braucht:
-1. **Exakte Files-Liste** — was er erstellen soll
-2. **Projekt-Path** — wohin schreiben
-3. **Design System** — Farben, Fonts, etc.
-4. **SPEC.md Kontext** — lesen und befolgen
-5. **Logging** — [AGENT-N] Created: <filename> pro File
+## CLI Usage
 
-## Troubleshooting
+```bash
+cd ~/Documents/HerbertSwarm
 
-### Agents schreiben in falsches Verzeichnis
-→ Agent-Prompt MUSS explizit sagen: `Write files to EXACTLY /path/to/project/`
+# 1. Swarm initialisieren
+python3 swarm_cli.py init --project ~/Documents/EasyROM --name EasyROM
 
-### Fehlende __init__.py Files
-→ Extra Agent für Phase 5 der alle `__init__.py` erstellt
+# 2. SPEC.md analysieren und Plan erstellen
+python3 swarm_cli.py plan --project ~/Documents/EasyROM
 
-### Batch-Size zu groß
-→ `--parallel 3` statt `--parallel 5` bei Rate-Limits
+# 3. Brain anzeigen (was wurde geplant)
+python3 swarm_cli.py brain --show
 
-## Workflow für neues Projekt
+# 4. Swarm ausführen (intelligent, phase für phase)
+python3 swarm_cli.py run --project ~/Documents/EasyROM --parallel 3
 
-1. SPEC.md erstellen mit vollständiger Spec
-2. `mkdir -p ~/Documents/HerbertSwarm`
-3. Scripts in das Verzeichnis kopieren
-4. `python3 swarm_master.py init --project /path/to/project --agents 15`
-5. `python3 run_swarm.py --project /path/to/project --agents 15 --parallel 3`
-6. Ergebnisse prüfen, Fehler manuell fixen
-7. `python3 swarm_master.py report`
+# 5. Status checken
+python3 swarm_cli.py status
 
-## Performance
+# 6. Reset (wenn was schief geht)
+python3 swarm_cli.py reset
+```
 
-- 15 Agents = ~5-10 min für full-stack App
-- Batch-Size 3 = guter Trade-off zwischen Speed und Rate-Limits
-- Phasen=5: INFRA → CORE → API → FRONTEND → TESTING
+## Programmatic Usage
 
-## Deployment / Sharing
+```python
+from swarm_brain import HerbertSwarm, SwarmBrain, SwarmPlanner, SwarmCoordinator
 
-Um das System zu teilen:
-1. `~/Documents/HerbertSwarm/` als ZIP exportieren
-2. Empfänger entpackt in `~/Documents/HerbertSwarm/`
-3. Fertig — keine Installation nötig, nur Python 3.10+
+# Init
+swarm = HerbertSwarm("EasyROM", "/path/to/project")
+
+# Initialize with SPEC
+swarm.initialize(spec_content)
+
+# Run
+result = swarm.run()
+
+# Report
+swarm.print_report()
+
+# Direct Brain access
+brain = swarm.get_brain()
+facts = brain.query_facts(tag="analysis")
+```
+
+## Agent Prompt Template
+
+Wenn du einen Agent via delegate_task spawnst, gibt ihm Zugriff aufs Brain:
+
+```python
+delegate_task(
+    tasks=[{
+        "goal": f"""You are Agent-001 (CODER) for project EasyROM.
+
+## YOUR TASK
+Create the FastAPI ROM endpoints.
+
+## READ FROM BRAIN
+- Check /tmp/herbert-swarm/brain.json for:
+  - What files already exist
+  - What tasks are complete
+  - What design decisions were made
+
+## YOUR FILES
+- backend/api/roms.py
+
+## WRITE TO BRAIN
+When done, write your findings:
+- Files you created
+- Design decisions made
+- API contract you established
+- Any issues encountered
+
+## LOG FORMAT
+[BRAIN] Sharing knowledge: <what you learned>
+[AGENT-001] Created: <file>
+[STATUS] Complete: <task-id>
+""",
+        "context": "Project: /Users/davidwork/Documents/EasyROM\nBrain file: /tmp/herbert-swarm/brain.json",
+        "role": "leaf",
+        "toolsets": ["terminal", "file"]
+    }]
+)
+```
+
+## Brain File Structure
+
+```json
+{
+  "project_name": "EasyROM",
+  "project_path": "/path/to/project",
+  "spec_summary": "...",
+  "facts": {
+    "api_endpoints": {
+      "key": "api_endpoints",
+      "value": ["GET /roms", "POST /roms"],
+      "source_agent": "agent-001",
+      "timestamp": "2026-05-03T...",
+      "tags": ["api", "backend"]
+    }
+  },
+  "files": {
+    "backend/api/roms.py": {
+      "path": "backend/api/roms.py",
+      "agent": "agent-001",
+      "size": 4500,
+      "lines": 150,
+      "status": "created",
+      "verified": true
+    }
+  },
+  "tasks": {
+    "task-001": {
+      "id": "task-001",
+      "description": "Create FastAPI endpoints",
+      "agent_role": "coder",
+      "files": ["backend/api/roms.py"],
+      "dependencies": [],
+      "status": "done",
+      "phase": 3,
+      "assigned_to": "agent-001"
+    }
+  },
+  "phases": ["INFRA", "BACKEND_CORE", "BACKEND_API", "FRONTEND", "TESTING"],
+  "current_phase": 3
+}
+```
+
+## Phase Execution Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ PHASE 1: INFRA                                              │
+│ - Tasks: package.json, Dockerfile, docker-compose          │
+│ - Dependencies: NONE → alle parallel                        │
+│ - Agents: 1-3 Coder Agents                                  │
+│ - Output: Config files created                               │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ PHASE 2: BACKEND_CORE                                        │
+│ - Tasks: database.py, models, scraper, hasher               │
+│ - Dependencies: PHASE 1 done                                │
+│ - Parallel: innerhalb phase, aber nach INFRA                │
+│ - Output: Core backend modules                               │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ PHASE 3: BACKEND_API                                         │
+│ - Tasks: api/roms.py, api/platforms.py, main.py            │
+│ - Dependencies: BACKEND_CORE done                           │
+│ - Output: FastAPI app mit allen Endpoints                   │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ PHASE 4: FRONTEND                                            │
+│ - Tasks: Pages, Components, Hooks                           │
+│ - Dependencies: PHASE 1 (für configs)                       │
+│ - Output: React App fertig                                   │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ PHASE 5: TESTING                                             │
+│ - Tasks: pytest tests, Docker integration                    │
+│ - Dependencies: Alle vorherigen                              │
+│ - Output: Test suite, Docker ready                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Key Principles
+
+1. **Brain first**: Jeder Agent liest Brain BEVOR er anfängt
+2. **Facts teilen**: Was ein Agent lernt, wissen alle
+3. **Dependencies respektieren**: Coordinator lässt nichts parallel laufen was Deps verletzt
+4. **Phase-weise**: Frühe Phasen ermöglichen spätere
+5. **Verification**: Agent markiert seine Files als "verified"
 
 ## Files
 
-- `swarm_master.py` — CLI für Init, Status, Report
-- `execute_swarm.py` — Subprocess-basierter Batch-Executor
-- `run_swarm.py` — Phase-based Orchestrator (nutzt delegate_task)
-- `SPEC.md` — Diese Doku
+- `swarm_brain.py` — Core Brain, Planner, Coordinator Klassen
+- `swarm_cli.py` — CLI Interface
+- `swarm_master.py` — Legacy v1 Master (kompatibel)
+- `run_swarm.py` — Legacy v1 Executor (kompatibel)
+- `SPEC.md` — Architektur-Doku
 
-## Lizenz / Credits
+## Repository
 
-Herbert Swarm — gebaut für David Schuchert's EasyROM Projekt.
-Inspiriert von ruflo, aber für MiniMax/Herbert.
+https://github.com/DavidSchuchert/herbert-swarm
+
+## Changelog
+
+- **v2.0**: Komplett-Rewrite mit Shared Brain, Planner, Coordinator
+  - Brain als Shared Memory zwischen allen Agents
+  - Intelligente Dependency-Auflösung
+  - Phase-Tracking im Coordinator
+  - Fact-Sharing zwischen Agents
