@@ -3,62 +3,104 @@
 ## TL;DR
 
 ```bash
-# Setup (einmalig)
-mkdir -p ~/Documents/HerbertSwarm
-cp -r ~/.hermes/skills/swarm-orchestration/herbert-swarm/scripts/* ~/Documents/HerbertSwarm/
+# Installation (einmalig)
+git clone https://github.com/DavidSchuchert/herbert-swarm ~/.hermes/skills/herbert-swarm
+
+# Alias setzen (optional, bequemer)
+alias swarm="python3 ~/.hermes/skills/herbert-swarm/scripts/swarm_cli.py"
 
 # Projekt bauen
-cd ~/Documents/HerbertSwarm
-python3 swarm_master.py init --project ~/Documents/MeinProjekt --agents 15
-python3 run_swarm.py --project ~/Documents/MeinProjekt --agents 15 --parallel 3
-python3 swarm_master.py report
+swarm init  --project ~/Documents/MeinProjekt --name MeinProjekt
+swarm plan  --project ~/Documents/MeinProjekt
+swarm run   --project ~/Documents/MeinProjekt --parallel 3
+swarm status
 ```
 
 ## Was ist das?
 
-Herbert Swarm ist ein Multi-Agent-Orchestrierungssystem. Es lässt 15 MiniMax Agents parallel arbeiten, die gemeinsam ein full-stack App bauen — in ~5-10 Minuten.
+Herbert Swarm ist ein Multi-Agent-Orchestrierungssystem für Hermes/MiniMax. Es startet echte Hermes-Agents (`AIAgent` aus dem Hermes-Core) parallel, die gemeinsam ein Full-Stack-Projekt aus einer `SPEC.md` bauen.
+
+**Wie es funktioniert:**
+1. `plan` liest deine `SPEC.md` und erstellt einen Task-Plan (Phasen + Dependencies)
+2. `run` startet für jeden Task einen echten `AIAgent` mit MiniMax
+3. Alle Agents teilen ein **Shared Brain** (`~/.local/share/herbert-swarm/brain.json`)
+4. Phasen werden nacheinander ausgeführt, Tasks innerhalb einer Phase parallel
 
 ## Voraussetzungen
 
+- Hermes installiert (`~/.hermes/hermes-agent/run_agent.py` vorhanden)
+- MiniMax API Key in `~/.hermes/auth.json` (wird automatisch gelesen)
 - Python 3.10+
-- MiniMax/Herbert (läuft already)
-- Keine额外 Installation nötig
-
-## Projekt-Struktur
-
-```
-~/Documents/HerbertSwarm/
-├── swarm_master.py    # CLI: init, status, report
-├── execute_swarm.py   # Batch-Executor
-├── run_swarm.py       # Phase-Orchestrator
-└── SPEC.md           # Doku
-
-~/Documents/MeinProjekt/   # Dein Projekt
-├── backend/
-├── frontend/
-├── configs/
-└── tests/
-```
 
 ## Workflow
 
-1. **SPEC.md erstellen** im Projekt (was soll gebaut werden)
-2. **Swarm init** — erstellt tasks.json
-3. **Swarm run** — startet 15 Agents in 5 Phasen
-4. **Report** — zeigt was erstellt wurde
+### 1. SPEC.md erstellen
+
+```markdown
+# MeinProjekt
+
+FastAPI Backend mit SQLAlchemy async. React + Vite + Tailwind Frontend.
+Docker Compose. Pytest Tests.
+```
+
+Hermes erkennt automatisch: Backend (FastAPI), Frontend (React), Docker, Tests.
+
+### 2. Init + Plan
+
+```bash
+swarm init --project ~/Documents/MeinProjekt
+swarm plan --project ~/Documents/MeinProjekt
+swarm brain --show   # zeigt was geplant wurde
+swarm status         # zeigt Phasen + Task-Status
+```
+
+### 3. Dry-Run (testen ohne API-Calls)
+
+```bash
+swarm run --project ~/Documents/MeinProjekt --dry-run
+```
+
+### 4. Echte Ausführung
+
+```bash
+swarm run --project ~/Documents/MeinProjekt --parallel 3
+```
+
+`--parallel 3` = max 3 Agents gleichzeitig. Bei Rate-Limits auf 2 reduzieren.
+
+## Projekt-Struktur nach dem Run
+
+```
+~/Documents/MeinProjekt/
+├── backend/
+│   ├── requirements.txt
+│   ├── config.py
+│   ├── core/database.py
+│   ├── core/scraper.py
+│   ├── models/
+│   └── api/
+├── frontend/
+│   ├── package.json
+│   ├── src/pages/
+│   └── src/components/
+├── docker/
+│   └── docker-compose.yml
+└── tests/
+```
 
 ## Troubleshooting
 
-- **Agent in falsches Verzeichnis geschrieben?** → Immer absolute Paths im Prompt
-- **Rate-Limit?** → `--parallel 3` statt 5
-- **Dependencies nicht erfüllt?** → Phase-Reihenfolge prüfen
+| Problem | Lösung |
+|---------|--------|
+| „No API key found" | `export MINIMAX_API_KEY=sk-cp-...` |
+| Phase hängt | `swarm reset` dann `plan` + `run` |
+| Rate Limit | `--parallel 2` statt 3 |
+| Falsches Verzeichnis | `--project` als absoluten Pfad angeben |
 
-## Eigenes Projekt
+## Hermes-Skill direkt aufrufen
 
-Um ein eigenes Projekt zu bauen:
+In Hermes einfach schreiben:
 
-1. SPEC.md im Projektverzeichnis erstellen
-2. Init: `python3 swarm_master.py init --project /path/to/project --agents 15`
-3. Run: `python3 run_swarm.py --project /path/to/project --agents 15 --parallel 3`
+> „starte herbert swarm für ~/Documents/MeinProjekt"
 
-Die Agents folgen den Tasks in `tasks.json` — einfach anpassbar.
+Hermes erkennt den Skill über die Triggers in `SKILL.md` und führt ihn aus.

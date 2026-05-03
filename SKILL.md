@@ -1,9 +1,10 @@
 ---
 name: herbert-swarm
-description: Herbert Swarm 2.0 — Intelligent Multi-Agent Orchestration mit Shared Brain, Planner und Coordinator. Nutze delegate_task für echte parallele Agents.
-triggers: [herbert swarm, swarm 2.0, intelligent swarm, shared brain, planner, coordinator, multi-agent mit gedächtnis]
-version: 2.0
+description: Herbert Swarm 2.0 — Intelligent Multi-Agent Orchestration mit Shared Brain, Planner und Coordinator. Startet echte parallele Hermes-Agents (AIAgent/MiniMax) die phasenweise ein Full-Stack-Projekt bauen.
+triggers: [herbert swarm, swarm 2.0, intelligent swarm, shared brain, planner, coordinator, multi-agent mit gedächtnis, swarm starten, projekt automatisiert bauen, parallele agents, hermes swarm]
+version: 2.1
 category: agent-orchestration
+install: git clone https://github.com/DavidSchuchert/herbert-swarm ~/.hermes/skills/herbert-swarm
 ---
 
 # Herbert Swarm 2.0 — Intelligent Swarm Orchestration
@@ -82,29 +83,58 @@ task = Task(
 # usw.
 ```
 
+## Installation
+
+```bash
+hermes skill install https://github.com/DavidSchuchert/herbert-swarm
+# oder manuell:
+git clone https://github.com/DavidSchuchert/herbert-swarm ~/.hermes/skills/herbert-swarm
+```
+
 ## CLI Usage
 
 ```bash
-cd ~/Documents/HerbertSwarm
+SKILL=~/.hermes/skills/herbert-swarm/scripts/swarm_cli.py
 
 # 1. Swarm initialisieren
-python3 swarm_cli.py init --project ~/Documents/EasyROM --name EasyROM
+python3 $SKILL init --project ~/Documents/EasyROM --name EasyROM
 
 # 2. SPEC.md analysieren und Plan erstellen
-python3 swarm_cli.py plan --project ~/Documents/EasyROM
+python3 $SKILL plan --project ~/Documents/EasyROM
 
 # 3. Brain anzeigen (was wurde geplant)
-python3 swarm_cli.py brain --show
+python3 $SKILL brain --show
 
-# 4. Swarm ausführen (intelligent, phase für phase)
-python3 swarm_cli.py run --project ~/Documents/EasyROM --parallel 3
+# 4. Erst Dry-Run (kein API-Call)
+python3 $SKILL run --project ~/Documents/EasyROM --dry-run
 
-# 5. Status checken
-python3 swarm_cli.py status
+# 5. Echte Ausführung (3 parallele Hermes-Agents)
+python3 $SKILL run --project ~/Documents/EasyROM --parallel 3
 
-# 6. Reset (wenn was schief geht)
-python3 swarm_cli.py reset
+# 6. Status checken
+python3 $SKILL status
+
+# 7. Reset (wenn was schief geht)
+python3 $SKILL reset
 ```
+
+## Wie Agents gespawnt werden
+
+Jeder Task wird als eigener `AIAgent` aus dem Hermes-Core gestartet:
+
+```python
+from run_agent import AIAgent  # aus ~/.hermes/hermes-agent/
+
+agent = AIAgent(
+    base_url="https://api.minimax.io/anthropic",  # aus ~/.hermes/config.yaml
+    api_key="sk-cp-...",                           # aus ~/.hermes/auth.json
+    model="MiniMax-M2.7",
+    enabled_toolsets=["terminal", "file"],
+)
+result = agent.run_conversation(task_prompt, task_id=tid)
+```
+
+API-Key und Base-URL werden automatisch aus `~/.hermes/auth.json` geladen — keine manuelle Konfiguration nötig.
 
 ## Programmatic Usage
 
@@ -130,45 +160,31 @@ facts = brain.query_facts(tag="analysis")
 
 ## Agent Prompt Template
 
-Wenn du einen Agent via delegate_task spawnst, gibt ihm Zugriff aufs Brain:
+Jeder Agent bekommt diesen Prompt (automatisch generiert von `swarm_cli.py`):
 
-```python
-delegate_task(
-    tasks=[{
-        "goal": f"""You are Agent-001 (CODER) for project EasyROM.
+```
+You are a coder agent in the Herbert Swarm.
+Working directory: /Users/davidwork/Documents/EasyROM
 
-## YOUR TASK
-Create the FastAPI ROM endpoints.
+PROJECT SPEC (summary):
+# EasyROM — FastAPI Backend, React Frontend ...
 
-## READ FROM BRAIN
-- Check /tmp/herbert-swarm/brain.json for:
-  - What files already exist
-  - What tasks are complete
-  - What design decisions were made
+TASK: Create FastAPI endpoints (ROMs CRUD, Platforms, Scrape)
 
-## YOUR FILES
-- backend/api/roms.py
+Files to create/modify:
+  - backend/api/roms.py
+  - backend/api/platforms.py
+  - backend/main.py
 
-## WRITE TO BRAIN
-When done, write your findings:
-- Files you created
-- Design decisions made
-- API contract you established
-- Any issues encountered
-
-## LOG FORMAT
-[BRAIN] Sharing knowledge: <what you learned>
-[AGENT-001] Created: <file>
-[STATUS] Complete: <task-id>
-""",
-        "context": "Project: /Users/davidwork/Documents/EasyROM\nBrain file: /tmp/herbert-swarm/brain.json",
-        "role": "leaf",
-        "toolsets": ["terminal", "file"]
-    }]
-)
+Implement the task completely. Create all listed files with production-ready code.
+Use best practices for the detected stack. Do not leave TODOs or placeholders.
 ```
 
+Der Agent hat Zugriff auf `terminal` und `file` Toolsets — er kann Dateien schreiben und Shell-Befehle ausführen.
+
 ## Brain File Structure
+
+Brain wird persistent gespeichert in `~/.local/share/herbert-swarm/brain.json` (überlebt Reboots).
 
 ```json
 {
@@ -262,17 +278,26 @@ When done, write your findings:
 
 ## Files
 
+- `scripts/swarm_cli.py` — Haupt-CLI (init, plan, run, brain, status, reset)
 - `swarm_brain.py` — Core Brain, Planner, Coordinator Klassen
-- `swarm_cli.py` — CLI Interface
-- `swarm_master.py` — Legacy v1 Master (kompatibel)
-- `run_swarm.py` — Legacy v1 Executor (kompatibel)
-- `SPEC.md` — Architektur-Doku
+- `SKILL.md` — Dieses Dokument (Hermes Skill-Manifest)
+- `SPEC.md` — Architektur-Dokumentation
+- `QUICKSTART.md` — Kurzanleitung
+- `README.md` — GitHub README
 
 ## Repository
 
 https://github.com/DavidSchuchert/herbert-swarm
 
 ## Changelog
+
+- **v2.1**: AIAgent-Integration (echte Hermes-Agents statt Placeholders)
+  - `_run_task` nutzt `AIAgent` aus `~/.hermes/hermes-agent/run_agent.py`
+  - API-Key automatisch aus `~/.hermes/auth.json` geladen
+  - `--dry-run` Flag für Tests ohne API-Calls
+  - Brain persistiert in `~/.local/share/herbert-swarm/` statt `/tmp/`
+  - `List`/`Dict` Import-Bug gefixt
+  - Echter Threading für parallele Task-Ausführung
 
 - **v2.0**: Komplett-Rewrite mit Shared Brain, Planner, Coordinator
   - Brain als Shared Memory zwischen allen Agents
