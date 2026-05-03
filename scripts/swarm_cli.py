@@ -8,6 +8,7 @@ Usage:
     python3 swarm_cli.py run --project <path>      # Execute with intelligent coordination
     python3 swarm_cli.py brain --show              # Show current brain state
     python3 swarm_cli.py status                   # Show task status
+    python3 swarm_cli.py report                   # Show final report of all created files
     python3 swarm_cli.py reset                    # Reset brain/state
 """
 
@@ -101,11 +102,11 @@ def cmd_plan(args) -> None:
         spec_content = spec_path.read_text(encoding="utf-8")
         brain["spec_summary"] = spec_content[:2000]
 
-    tasks = _analyze_and_plan(spec_content, project_path)
+    tasks, phases = _analyze_and_plan(spec_content, project_path)
 
     brain["tasks"] = tasks
     if not brain.get("phases"):
-        brain["phases"] = ["INFRA", "BACKEND_CORE", "BACKEND_API", "FRONTEND", "TESTING"]
+        brain["phases"] = phases
 
     _save_brain(brain)
 
@@ -115,21 +116,87 @@ def cmd_plan(args) -> None:
         log(f"  Phase {phase_num}: {phase_name} ({len(phase_tasks)} tasks)")
 
 
-def _analyze_and_plan(spec_content: str, project_path: Path) -> dict:
-    """Analyze SPEC.md and create intelligent task plan."""
+def _scan_project_files(project_path: Path) -> set[str]:
+    """Scan project directory for filenames to infer stack when SPEC is missing/vague."""
+    found: set[str] = set()
+    try:
+        for entry in project_path.rglob("*"):
+            if entry.is_file():
+                name = entry.name.lower()
+                found.add(name)
+    except Exception:
+        pass
+    return found
+
+
+def _analyze_and_plan(spec_content: str, project_path: Path) -> tuple[dict, list[str]]:
+    """Analyze SPEC.md and create intelligent task plan.
+
+    Stack detection uses broad keyword sets.  When SPEC is sparse the
+    project file tree is used as a fallback signal.
+    """
     lower = spec_content.lower()
 
-    has_backend  = any(k in lower for k in ["fastapi", "backend", "python", "api"])
-    has_frontend = any(k in lower for k in ["react", "frontend", "vite", "typescript", "tailwind"])
-    has_docker   = any(k in lower for k in ["docker", "container"])
-    has_tests    = any(k in lower for k in ["test", "pytest", "unittest"])
+    # --- Backend detection (broad) ---
+    backend_keywords = [
+        "fastapi", "flask", "django", "starlette", "express", "aiohttp",
+        "tornado", "backend", "python", "api", "rest", "graphql", "grpc",
+        "server", "endpoint", "routes", "uvicorn", "gunicorn",
+    ]
+    # --- Frontend detection (broad) ---
+    frontend_keywords = [
+        "react", "next.js", "nextjs", "nuxt", "sveltekit", "svelte",
+        "vue", "vite", "angular", "astro", "remix", "frontend",
+        "typescript", "tailwind", "html", "css", "ui", "web app",
+    ]
+    # --- Database detection (own phase candidate) ---
+    database_keywords = [
+        "postgresql", "postgres", "mysql", "mariadb", "mongodb", "mongo",
+        "redis", "sqlite", "cassandra", "elasticsearch", "database", "db",
+        "sqlalchemy", "prisma", "alembic", "migration",
+    ]
+    # --- Docker / infra detection ---
+    docker_keywords = ["docker", "container", "compose", "kubernetes", "k8s", "helm"]
+    # --- CI / testing detection ---
+    ci_keywords = [
+        "github actions", "github-actions", "ci", "pytest-cov", "coverage",
+        "test", "pytest", "unittest", "jest", "vitest", "cypress",
+    ]
+
+    has_backend  = any(k in lower for k in backend_keywords)
+    has_frontend = any(k in lower for k in frontend_keywords)
+    has_database = any(k in lower for k in database_keywords)
+    has_docker   = any(k in lower for k in docker_keywords)
+    has_ci       = any(k in lower for k in ci_keywords)
+
+    # Fallback: scan actual project files when SPEC is empty / too short
+    if not spec_content.strip() or len(spec_content.strip()) < 80:
+        file_names = _scan_project_files(project_path)
+        if not has_backend:
+            has_backend = bool(file_names & {
+                "requirements.txt", "pyproject.toml", "setup.py", "main.py",
+                "app.py", "server.py", "manage.py",
+            })
+        if not has_frontend:
+            has_frontend = bool(file_names & {
+                "package.json", "vite.config.ts", "vite.config.js",
+                "next.config.js", "nuxt.config.ts", "svelte.config.js",
+                "tailwind.config.js", "tailwind.config.ts",
+            })
+        if not has_docker:
+            has_docker = bool(file_names & {"dockerfile", "docker-compose.yml", "docker-compose.yaml"})
+        if not has_ci:
+            has_ci = "pytest.ini" in file_names or "conftest.py" in file_names
 
     tasks: dict = {}
     task_id = 1
 
     def make_task(desc: str, role: str, files: list[str], deps: list[str], phase: int, priority: int) -> dict:
+        nonlocal task_id
+        tid = f"task-{task_id:03d}"
+        task_id += 1
         return {
-            "id": f"task-{task_id:03d}",
+            "id": tid,
             "description": desc,
             "agent_role": role,
             "files": files,
@@ -140,7 +207,32 @@ def _analyze_and_plan(spec_content: str, project_path: Path) -> dict:
             "created_by": "planner",
         }
 
-    # Phase 1: Infrastructure
+    # Build dynamic phase list depending on detected stack
+    phase_names: list[str] = ["INFRA"]
+    phase_map: dict[str, int] = {"INFRA": 1}
+    next_phase = 2
+
+    if has_database:
+        phase_names.append("DATABASE")
+        phase_map["DATABASE"] = next_phase
+        next_phase += 1
+    if has_backend:
+        phase_names.append("BACKEND_CORE")
+        phase_map["BACKEND_CORE"] = next_phase
+        next_phase += 1
+        phase_names.append("BACKEND_API")
+        phase_map["BACKEND_API"] = next_phase
+        next_phase += 1
+    if has_frontend:
+        phase_names.append("FRONTEND")
+        phase_map["FRONTEND"] = next_phase
+        next_phase += 1
+    if has_ci:
+        phase_names.append("TESTING")
+        phase_map["TESTING"] = next_phase
+        next_phase += 1
+
+    # -- Phase INFRA --
     infra_files: list[str] = []
     if has_docker:
         infra_files += [
@@ -158,99 +250,147 @@ def _analyze_and_plan(spec_content: str, project_path: Path) -> dict:
     infra_id = None
     if infra_files:
         infra_id = f"task-{task_id:03d}"
-        tasks[infra_id] = make_task("Create infrastructure and configuration files", "coder", infra_files, [], 1, 1)
-        task_id += 1
+        t = make_task("Create infrastructure and configuration files", "coder", infra_files, [], phase_map["INFRA"], 1)
+        tasks[infra_id] = t
 
-    # Phase 2: Backend Core
-    db_id = None
-    if has_backend:
-        db_id = f"task-{task_id:03d}"
-        tasks[db_id] = make_task(
-            "Create database models and connection layer (SQLAlchemy async)",
+    # -- Phase DATABASE (optional) --
+    db_model_id = None
+    if has_database and "DATABASE" in phase_map:
+        db_model_id = f"task-{task_id:03d}"
+        t = make_task(
+            "Create database models and migration scripts",
             "coder",
-            ["backend/core/database.py", "backend/models/rom.py"],
+            ["backend/core/database.py", "backend/models/__init__.py", "alembic/env.py"],
             [infra_id] if infra_id else [],
-            2, 2,
+            phase_map["DATABASE"],
+            2,
         )
-        task_id += 1
+        tasks[db_model_id] = t
 
-        tasks[f"task-{task_id:03d}"] = make_task(
+    # -- Phase BACKEND_CORE --
+    db_id = None
+    if has_backend and "BACKEND_CORE" in phase_map:
+        core_deps = [d for d in [infra_id, db_model_id] if d]
+        db_id = f"task-{task_id:03d}"
+        t = make_task(
+            "Create database connection layer (SQLAlchemy async)" if not has_database else
+            "Create core services: scraper, hasher, business logic",
+            "coder",
+            ["backend/core/database.py", "backend/models/rom.py"]
+            if not has_database else
+            ["backend/core/scraper.py", "backend/core/hasher.py", "backend/services/rom_service.py"],
+            core_deps,
+            phase_map["BACKEND_CORE"],
+            2,
+        )
+        tasks[db_id] = t
+
+        t2_id = f"task-{task_id:03d}"
+        t2 = make_task(
             "Create scraper (ScreenScraper API) and file hasher (SHA1)",
             "coder",
             ["backend/core/scraper.py", "backend/core/hasher.py"],
-            [infra_id] if infra_id else [],
-            2, 2,
+            core_deps,
+            phase_map["BACKEND_CORE"],
+            2,
         )
-        task_id += 1
+        tasks[t2_id] = t2
 
-    # Phase 3: Backend API
+    # -- Phase BACKEND_API --
     api_id = None
-    if has_backend:
+    if has_backend and "BACKEND_API" in phase_map:
+        api_deps = [d for d in [db_id] if d]
         api_id = f"task-{task_id:03d}"
-        tasks[api_id] = make_task(
-            "Create FastAPI endpoints (ROMs CRUD, Platforms, Scrape)",
+        t = make_task(
+            "Create API endpoints (ROMs CRUD, Platforms, Scrape)",
             "coder",
             ["backend/api/roms.py", "backend/api/platforms.py", "backend/api/scrape.py", "backend/main.py"],
-            [db_id] if db_id else [],
-            3, 3,
+            api_deps,
+            phase_map["BACKEND_API"],
+            3,
         )
-        task_id += 1
+        tasks[api_id] = t
 
-    # Phase 4: Frontend
-    if has_frontend:
-        tasks[f"task-{task_id:03d}"] = make_task(
-            "Create React pages (Dashboard, Library with grid view)",
+    # -- Phase FRONTEND --
+    if has_frontend and "FRONTEND" in phase_map:
+        fe_deps = [d for d in [infra_id] if d]
+        t = make_task(
+            "Create main pages (Dashboard, Library with grid view)",
             "coder",
             ["frontend/src/pages/Dashboard.tsx", "frontend/src/pages/Library.tsx"],
-            [infra_id] if infra_id else [],
-            4, 4,
+            fe_deps,
+            phase_map["FRONTEND"],
+            4,
         )
-        task_id += 1
+        tasks[t["id"]] = t
 
-        tasks[f"task-{task_id:03d}"] = make_task(
-            "Create React components (ROMCard, FilterSidebar, UploadZone)",
+        t2 = make_task(
+            "Create UI components (ROMCard, FilterSidebar, UploadZone)",
             "coder",
-            ["frontend/src/components/ROMCard.tsx", "frontend/src/components/FilterSidebar.tsx", "frontend/src/components/UploadZone.tsx"],
-            [infra_id] if infra_id else [],
-            4, 4,
+            [
+                "frontend/src/components/ROMCard.tsx",
+                "frontend/src/components/FilterSidebar.tsx",
+                "frontend/src/components/UploadZone.tsx",
+            ],
+            fe_deps,
+            phase_map["FRONTEND"],
+            4,
         )
-        task_id += 1
+        tasks[t2["id"]] = t2
 
-    # Phase 5: Testing
-    if has_tests:
-        tasks[f"task-{task_id:03d}"] = make_task(
-            "Create pytest tests for API and scraper",
+    # -- Phase TESTING --
+    if has_ci and "TESTING" in phase_map:
+        test_deps = [d for d in [api_id] if d]
+        t = make_task(
+            "Create tests for API and core services",
             "reviewer",
             ["tests/test_api.py", "tests/test_scraper.py", "tests/conftest.py"],
-            [api_id] if api_id else [],
-            5, 5,
+            test_deps,
+            phase_map["TESTING"],
+            5,
         )
+        tasks[t["id"]] = t
 
-    return tasks
+    return tasks, phase_names
 
 
 # ---------------------------------------------------------------------------
 # run  — actually delegates to claude CLI
 # ---------------------------------------------------------------------------
 
-def _build_agent_prompt(task: dict, brain: dict) -> str:
-    """Build the prompt sent to the claude agent for a task."""
-    project_path = brain.get("project_path", ".")
+def _build_agent_prompt(task: dict, brain: dict, brain_file: Path) -> str:
+    """Build the prompt sent to the Hermes agent for a task."""
+    project_path = str(Path(brain.get("project_path", ".")).resolve())
     spec_summary = brain.get("spec_summary", "")
+    tid = task["id"]
     files = "\n".join(f"  - {f}" for f in task["files"])
 
     context = ""
     if spec_summary:
         context = f"\nPROJECT SPEC (summary):\n{spec_summary[:800]}\n"
 
+    brain_instructions = (
+        f"\nBRAIN FILE: {brain_file}\n"
+        f"After completing your task, update the brain file:\n"
+        f"  1. Read the JSON from {brain_file}\n"
+        f"  2. Set brain[\"facts\"][\"task_{tid}_result\"] = {{\n"
+        f"       \"files_created\": [<list of absolute paths you actually created/modified>],\n"
+        f"       \"summary\": \"<one-sentence description of what you did>\"\n"
+        f"     }}\n"
+        f"  3. Write the updated JSON back to {brain_file}\n"
+        f"Do this ONLY after all files are complete and correct.\n"
+    )
+
     return (
         f"You are a {task['agent_role']} agent in the Herbert Swarm.\n"
-        f"Working directory: {project_path}\n"
+        f"Working directory (absolute): {project_path}\n"
+        f"All file paths you create/modify must be INSIDE this directory.\n"
         f"{context}\n"
         f"TASK: {task['description']}\n\n"
         f"Files to create/modify:\n{files}\n\n"
         f"Implement the task completely. Create all listed files with production-ready code.\n"
-        f"Use best practices for the detected stack. Do not leave TODOs or placeholders."
+        f"Use best practices for the detected stack. Do not leave TODOs or placeholders.\n"
+        f"{brain_instructions}"
     )
 
 
@@ -289,15 +429,24 @@ def _load_hermes_config() -> dict:
             pass
 
     # Env var fallback
-    config["api_key"] = config["api_key"] or os.environ.get("MINIMAX_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+    config["api_key"] = (
+        config["api_key"]
+        or os.environ.get("MINIMAX_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
+    )
     return config
 
 
-def _run_task(tid: str, task: dict, brain: dict, results: dict, lock: threading.Lock) -> None:
+def _run_task(
+    tid: str,
+    task: dict,
+    brain: dict,
+    brain_file: Path,
+    results: dict,
+    lock: threading.Lock,
+) -> None:
     """Execute a single task via Hermes AIAgent (MiniMax)."""
-    import sys
-
-    prompt = _build_agent_prompt(task, brain)
+    prompt = _build_agent_prompt(task, brain, brain_file)
     hermes_agent_dir = Path.home() / ".hermes" / "hermes-agent"
 
     # Add hermes-agent to path so we can import AIAgent
@@ -348,6 +497,24 @@ def cmd_run(args) -> None:
 
     max_parallel = getattr(args, "parallel", 3)
     dry_run = getattr(args, "dry_run", False)
+    retry_failed = getattr(args, "retry_failed", False)
+
+    # When --retry-failed: reset failed tasks back to pending
+    if retry_failed:
+        retried = 0
+        for task in brain["tasks"].values():
+            if task["status"] == "failed":
+                task["status"] = "pending"
+                task.pop("error", None)
+                task.pop("completed_at", None)
+                retried += 1
+        if retried == 0:
+            log("No failed tasks to retry.", YELLOW)
+            return
+        log(f"Retrying {retried} failed task(s)...", YELLOW)
+        _save_brain(brain)
+
+    run_start = datetime.now()
 
     log(f"{BOLD}========== HERBERT SWARM 2.0 EXECUTION =========={RESET}", BLUE)
     log(f"Project: {brain['project_name']}", CYAN)
@@ -355,6 +522,8 @@ def cmd_run(args) -> None:
     log(f"Phases:  {', '.join(brain.get('phases', []))}", CYAN)
     if dry_run:
         log("DRY RUN — no agents will be called", YELLOW)
+    if retry_failed:
+        log("Mode: retry failed tasks only", YELLOW)
 
     for phase_num, phase_name in enumerate(brain.get("phases", []), 1):
         phase_tasks = [
@@ -393,7 +562,7 @@ def cmd_run(args) -> None:
                 for tid, task in batch:
                     t = threading.Thread(
                         target=_run_task,
-                        args=(tid, task, brain, results, lock),
+                        args=(tid, task, brain, BRAIN_FILE, results, lock),
                         daemon=True,
                     )
                     threads.append((tid, t))
@@ -402,10 +571,15 @@ def cmd_run(args) -> None:
                 for tid, t in threads:
                     t.join()
 
-                # Update statuses from results
+                # Update statuses from results; log errors into brain
                 for tid, task in batch:
                     r = results.get(tid, {})
-                    task["status"] = "done" if r.get("success") else "failed"
+                    if r.get("success"):
+                        task["status"] = "done"
+                        task.pop("error", None)
+                    else:
+                        task["status"] = "failed"
+                        task["error"] = r.get("output", "unknown error")[:500]
                     task["completed_at"] = datetime.now().isoformat()
 
             _save_brain(brain)
@@ -416,7 +590,136 @@ def cmd_run(args) -> None:
     done   = sum(1 for t in brain["tasks"].values() if t["status"] == "done")
     failed = sum(1 for t in brain["tasks"].values() if t["status"] == "failed")
     total  = len(brain["tasks"])
-    log(f"\n{BOLD}COMPLETE: {done}/{total} done, {failed} failed{RESET}", GREEN if not failed else YELLOW)
+    elapsed = (datetime.now() - run_start).seconds
+    log(
+        f"\n{BOLD}COMPLETE: {done}/{total} done, {failed} failed "
+        f"(elapsed: {elapsed}s){RESET}",
+        GREEN if not failed else YELLOW,
+    )
+
+    if failed:
+        log("Re-run failed tasks with: python3 swarm_cli.py run --project <path> --retry-failed", YELLOW)
+
+
+# ---------------------------------------------------------------------------
+# report
+# ---------------------------------------------------------------------------
+
+def cmd_report(args) -> None:
+    """Print a final summary report: files created, durations, success/fail rate."""
+    brain = _load_brain()
+    tasks = brain.get("tasks", {})
+    facts = brain.get("facts", {})
+
+    if not tasks:
+        log("No tasks found. Run 'plan' and 'run' first.", YELLOW)
+        return
+
+    total   = len(tasks)
+    done    = sum(1 for t in tasks.values() if t["status"] == "done")
+    failed  = sum(1 for t in tasks.values() if t["status"] == "failed")
+    pending = sum(1 for t in tasks.values() if t["status"] == "pending")
+    running = sum(1 for t in tasks.values() if t["status"] == "running")
+
+    success_rate = (done / total * 100) if total else 0
+
+    print(f"\n{BOLD}{CYAN}{'=' * 55}{RESET}")
+    print(f"{BOLD}{CYAN}  HERBERT SWARM 2.0 — FINAL REPORT{RESET}")
+    print(f"{BOLD}{CYAN}{'=' * 55}{RESET}")
+    print(f"\n{BOLD}Project:{RESET} {brain.get('project_name', 'N/A')}")
+    print(f"{BOLD}Path:   {RESET} {brain.get('project_path', 'N/A')}")
+    print(f"{BOLD}Created:{RESET} {brain.get('created_at', 'N/A')}")
+    print()
+
+    # ---- Duration per task ----
+    print(f"{BOLD}Task Summary ({total} total):{RESET}")
+    print(f"  {'done':>8}: {done}  ({success_rate:.0f}%)")
+    print(f"  {'failed':>8}: {failed}")
+    if pending:
+        print(f"  {'pending':>8}: {pending}")
+    if running:
+        print(f"  {'running':>8}: {running}")
+    print()
+
+    # ---- Phase breakdown ----
+    print(f"{BOLD}By Phase:{RESET}")
+    icons = {"pending": "○", "running": "◐", "done": "●", "failed": "✗"}
+    for phase_num, phase_name in enumerate(brain.get("phases", []), 1):
+        phase_tasks = [(tid, t) for tid, t in tasks.items() if t["phase"] == phase_num]
+        if not phase_tasks:
+            continue
+        p_done   = sum(1 for _, t in phase_tasks if t["status"] == "done")
+        p_failed = sum(1 for _, t in phase_tasks if t["status"] == "failed")
+        bar = "●" * p_done + "✗" * p_failed + "○" * (len(phase_tasks) - p_done - p_failed)
+        elapsed_parts = []
+        for _, t in phase_tasks:
+            started = t.get("started_at")
+            completed = t.get("completed_at")
+            if started and completed:
+                try:
+                    s = datetime.fromisoformat(started)
+                    c = datetime.fromisoformat(completed)
+                    elapsed_parts.append((c - s).seconds)
+                except Exception:
+                    pass
+        dur_str = f"  ~{max(elapsed_parts)}s" if elapsed_parts else ""
+        print(f"  Phase {phase_num} {phase_name:15s}: [{bar}] {p_done}/{len(phase_tasks)}{dur_str}")
+
+    # ---- Files created (from agent brain updates) ----
+    all_created_files: list[str] = []
+    task_summaries: list[tuple[str, str, str]] = []  # (tid, status, summary)
+
+    for tid, task in tasks.items():
+        fact_key = f"task_{tid}_result"
+        fact = facts.get(fact_key, {})
+        if isinstance(fact, dict):
+            fc = fact.get("files_created", [])
+            if isinstance(fc, list):
+                all_created_files.extend(fc)
+            summary = fact.get("summary", "")
+        else:
+            summary = ""
+        task_summaries.append((tid, task["status"], summary))
+
+    # Also include declared task files for tasks that succeeded but did not update brain
+    for tid, task in tasks.items():
+        if task["status"] == "done":
+            project_path = brain.get("project_path", "")
+            for f in task.get("files", []):
+                full = str(Path(project_path) / f) if project_path else f
+                if full not in all_created_files:
+                    all_created_files.append(full)
+
+    if all_created_files:
+        unique_files = list(dict.fromkeys(all_created_files))  # deduplicate, preserve order
+        print(f"\n{BOLD}Files Created ({len(unique_files)}):{RESET}")
+        for f in unique_files:
+            exists = Path(f).exists()
+            mark = GREEN + "✓" + RESET if exists else YELLOW + "?" + RESET
+            print(f"  {mark} {f}")
+    else:
+        print(f"\n{BOLD}Files Created:{RESET} (none recorded — run the swarm first)")
+
+    # ---- Agent summaries ----
+    agent_summaries = [(tid, st, sm) for tid, st, sm in task_summaries if sm]
+    if agent_summaries:
+        print(f"\n{BOLD}Agent Summaries:{RESET}")
+        for tid, status, summary in agent_summaries:
+            icon = icons.get(status, "?")
+            color = GREEN if status == "done" else RED
+            print(f"  {color}{icon}{RESET} {tid}: {summary}")
+
+    # ---- Failed tasks with errors ----
+    failed_tasks = [(tid, t) for tid, t in tasks.items() if t["status"] == "failed"]
+    if failed_tasks:
+        print(f"\n{BOLD}{RED}Failed Tasks:{RESET}")
+        for tid, task in failed_tasks:
+            err = task.get("error", "no error recorded")
+            print(f"  {RED}✗{RESET} {tid}: {task['description'][:55]}")
+            print(f"      Error: {err[:200]}")
+        print(f"\n  Retry with: python3 swarm_cli.py run --project <path> --retry-failed")
+
+    print(f"\n{BOLD}{CYAN}{'=' * 55}{RESET}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +819,12 @@ if __name__ == "__main__":
     p.add_argument("--project", required=True)
     p.add_argument("--parallel", type=int, default=3)
     p.add_argument("--dry-run", action="store_true", dest="dry_run", help="Plan only, no agents")
+    p.add_argument(
+        "--retry-failed",
+        action="store_true",
+        dest="retry_failed",
+        help="Re-run only tasks that previously failed",
+    )
     p.set_defaults(func=cmd_run)
 
     p = subs.add_parser("brain", help="Show brain state")
@@ -524,6 +833,9 @@ if __name__ == "__main__":
 
     p = subs.add_parser("status", help="Show task status")
     p.set_defaults(func=cmd_status)
+
+    p = subs.add_parser("report", help="Show final report: files created, durations, success rate")
+    p.set_defaults(func=cmd_report)
 
     p = subs.add_parser("reset", help="Reset brain")
     p.set_defaults(func=cmd_reset)
